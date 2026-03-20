@@ -1,14 +1,22 @@
-#include <stdint.h>
-#include <stdlib.h>
-
 #include "class/midi/midi_device.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hal/gpio_types.h"
 #include "projdefs.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define MIDI_BUTTON_INPUT 18
+#define PITCH_UP_BUTTON_INPUT 17
+#define PITCH_DOWN_BUTTON_INPUT 16
+
+#define MIDDLE_C 60
 
 static const char *TAG = "Arbin midi";
 
@@ -60,38 +68,6 @@ static void midi_task_read_example(void *arg) {
     }
 }
 
-// static void periodic_midi_write_example_cb(void *arg) {
-//     uint8_t const note_sequence[] = {
-//         69, 64, 69, 65, 69, 67, 69, 65, 69, 71, 69, 72, 69, 71, 69, 72,
-//     };
-//
-//     static uint8_t const cable_num = 0;
-//     static uint8_t const channel = 0;
-//     static uint32_t note_pos = 0;
-//
-//     int previous = note_pos - 1;
-//
-//     if (previous < 0) {
-//         previous = sizeof(note_sequence) - 1;
-//     }
-//
-//     ESP_LOGI(TAG, "Writing MIDI data %d", note_sequence[note_pos]);
-//
-//     if (tud_midi_mounted()) {
-//         uint8_t note_on[3] = {NOTE_ON | channel, note_sequence[note_pos],
-//         127}; tud_midi_stream_write(cable_num, note_on, 3);
-//
-//         uint8_t note_off[3] = {NOTE_OFF | channel, note_sequence[previous],
-//         0}; tud_midi_stream_write(cable_num, note_off, 3);
-//     }
-//
-//     note_pos++;
-//
-//     if (note_pos >= sizeof(note_sequence)) {
-//         note_pos = 0;
-//     }
-// }
-
 void app_main(void) {
     ESP_LOGI(TAG, "USB initialization");
 
@@ -106,12 +82,45 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "USB initialization DONE");
 
+    ESP_LOGI(TAG, "Button initialization");
+
+    gpio_config_t midi_button = {
+        .pin_bit_mask = (1ULL << MIDI_BUTTON_INPUT),
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&midi_button);
+
+    uint8_t midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+
+    gpio_config_t pitch_up_button = {
+        .pin_bit_mask = (1ULL << PITCH_UP_BUTTON_INPUT),
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&pitch_up_button);
+
+    uint8_t pitch_up_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+
+    gpio_config_t pitch_down_button = {
+        .pin_bit_mask = (1ULL << PITCH_DOWN_BUTTON_INPUT),
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&pitch_down_button);
+
+    uint8_t pitch_down_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+
+    ESP_LOGI(TAG, "Button initialization DONE");
+
     static uint8_t const cable_num = 0;
     static uint8_t const channel = 0;
 
-    uint8_t note_on[3] = {NOTE_ON | channel, 72, 127};
+    uint8_t current_note = MIDDLE_C;
 
-    uint8_t note_off[3] = {NOTE_OFF | channel, 72, 0};
+    uint8_t note_on[3] = {NOTE_ON | channel, current_note, 127};
+
+    uint8_t note_off[3] = {NOTE_OFF | channel, current_note, 0};
 
     // Read received MIDI packets
     ESP_LOGI(TAG, "MIDI read task init");
@@ -119,13 +128,56 @@ void app_main(void) {
                 NULL, 5, NULL);
 
     while (1) {
+        midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+        pitch_up_button_state = gpio_get_level(PITCH_UP_BUTTON_INPUT);
+        pitch_down_button_state = gpio_get_level(PITCH_DOWN_BUTTON_INPUT);
+
         if (tud_midi_mounted()) {
-            tud_midi_stream_write(cable_num, note_on, 3);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            tud_midi_stream_write(cable_num, note_off, 3);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(5000));
+            if (midi_button_state) {
+                tud_midi_stream_write(cable_num, note_on, 3);
+            } else if (pitch_up_button_state) {
+                current_note++;
+            } else if (pitch_down_button_state) {
+                current_note--;
+            } else {
+                tud_midi_stream_write(cable_num, note_off, 3);
+            }
         }
+
+        if (current_note > 127)
+            current_note = 127;
+        if (current_note < 1)
+            current_note = 1;
+
+        note_on[1] = current_note;
+        note_off[1] = current_note;
+
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
+
+// TO DO
+// 1. Create different function for specific task instead of bloatin app_main()
+// 2. Handle hanging note problem
+// 3. Add potentio or a joystick to control midi cc
+// 4. Use interrupt instead of polling
+
+// Testing button (turns out my error come from lousy cables ^_^)
+// void app_main(void) {
+//     gpio_config_t midi_button = {
+//         .pin_bit_mask = (1ULL << MIDI_BUTTON_INPUT),
+//         .mode = GPIO_MODE_INPUT,
+//         .intr_type = GPIO_INTR_DISABLE,
+//     };
+//     gpio_config(&midi_button);
+//     uint8_t midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+//     while (1) {
+//         midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
+//         if (midi_button_state == 1) {
+//             printf("Hi from ESP32 \n");
+//         } else {
+//             printf("Goodbye \n");
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(10));
+//     }
+// }
