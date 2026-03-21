@@ -1,23 +1,30 @@
 #include "class/midi/midi_device.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hal/adc_types.h"
 #include "hal/gpio_types.h"
 #include "projdefs.h"
+#include "sdkconfig.h"
+#include "soc/clk_tree_defs.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/_intsup.h>
 
 #define MIDI_BUTTON_INPUT 18
 #define PITCH_UP_BUTTON_INPUT 17
 #define PITCH_DOWN_BUTTON_INPUT 16
 
 #define MIDDLE_C 60
+
+static adc_oneshot_unit_handle_t adc_handle;
 
 static const char *TAG = "Arbin midi";
 
@@ -75,9 +82,25 @@ void button_init() {
     ESP_LOGI(TAG, "Button initialization DONE");
 }
 
+void potentio_init() {
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = ADC_UNIT_1,
+        .clk_src = ADC_RTC_CLK_SRC_DEFAULT,
+    };
+    adc_oneshot_new_unit(&init_config, &adc_handle);
+
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_12,
+        .atten = ADC_ATTEN_DB_12,
+    };
+    adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_7, &config);
+}
+
 void midi_task_write() {
     static uint8_t const cable_num = 0;
     static uint8_t const channel = 0;
+
+    int adc_value;
 
     uint8_t current_note = MIDDLE_C;
     uint8_t pitch_at_start = 0;
@@ -106,6 +129,11 @@ void midi_task_write() {
             note_is_active = false;
         }
 
+        adc_oneshot_read(adc_handle, ADC_CHANNEL_7, &adc_value);
+        uint8_t scaled_value = adc_value >> 5;
+        uint8_t cc_msg[3] = {0xB0, 1, scaled_value};
+        tud_midi_stream_write(0, cc_msg, 3);
+
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -113,30 +141,11 @@ void midi_task_write() {
 void app_main(void) {
     usb_init();
     button_init();
-    midi_task_write();
+    potentio_init();
+
+    midi_task_write(); // this function runs forever
 }
 
 // TO DO
-// 1. Add potentio or a joystick to control midi cc
-// 2. Make it polyphonic
-// 3. Use interrupt instead of polling
-
-// Testing button (turns out my error come from lousy cables ^_^)
-// void app_main(void) {
-//     gpio_config_t midi_button = {
-//         .pin_bit_mask = (1ULL << MIDI_BUTTON_INPUT),
-//         .mode = GPIO_MODE_INPUT,
-//         .intr_type = GPIO_INTR_DISABLE,
-//     };
-//     gpio_config(&midi_button);
-//     uint8_t midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
-//     while (1) {
-//         midi_button_state = gpio_get_level(MIDI_BUTTON_INPUT);
-//         if (midi_button_state == 1) {
-//             printf("Hi from ESP32 \n");
-//         } else {
-//             printf("Goodbye \n");
-//         }
-//         vTaskDelay(pdMS_TO_TICKS(10));
-//     }
-// }
+// 1. Make it polyphonic
+// 2. Use interrupt instead of polling (needed for 20s input or above)
